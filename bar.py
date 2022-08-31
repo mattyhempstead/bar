@@ -26,7 +26,10 @@ class Bar:
         self.bar_size = 50
         """ The height of the bar in pixels """
 
-        self.location = Bar.Location.TOP
+        self.monitor_n = 2
+        """ The monitor number """
+
+        self.location:Bar.Location = Bar.Location.TOP
 
         # Colour style for (b)
         self.stylesheet = b"""
@@ -35,7 +38,17 @@ class Bar:
             }
         """
 
+        # Display > Screen > Monitor > Window
         self.window = None
+        self.screen = None
+        self.display = None
+        self.monitor = None
+
+
+    @property
+    def xid(self):
+        """ Can only be accessed after .show_all() """
+        return hex(self.window.get_toplevel().get_window().get_xid())
 
 
     def create_window(self):
@@ -44,8 +57,12 @@ class Bar:
                                 Gtk.get_minor_version(),
                                 Gtk.get_micro_version()))
 
+
         # (a) Create an undecorated dock
         self.window = Gtk.Window()
+
+        # self.window.set_gravity(Gdk.Gravity.NORTH_WEST)
+        # self.window.set_gravity(Gdk.Gravity.SOUTH_WEST)
 
         # X11 title
         self.window.set_title(self.bar_title)
@@ -72,98 +89,152 @@ class Bar:
 
 
         print("window", self.window)
-        print(self.window.get_window())
+        print("getwindow1", self.window.get_window())
         # print(window.get_window().get_xid())
+
+        # The screen that the window is inside of
+        # Usually only one screen nowadays which contains all the monitors
+        # Gdk.Screen.get_default() seems to return the same screen, so I assume GTK 
+        # uses the default screen for the window.
+        # Also `self.display.get_default_screen()`
+        self.screen = self.window.get_screen()
+        print("screen", self.screen)
+
+        # the screen contains all monitors
+        self.display = self.screen.get_display()
+        print("display", self.display)
 
         # (b) Style it
         style_provider = Gtk.CssProvider()
         style_provider.load_from_data(self.stylesheet)
         Gtk.StyleContext.add_provider_for_screen(
-            Gdk.Screen.get_default(),
+            self.screen,
             style_provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
 
-        # the screen contains all monitors
-        screen = self.window.get_screen()
-        print(screen)
-        # print(dir(screen))
-        # input()
-
-        monitor = self.window.get_monitor()
-        print("mon", monitor)
-
-        # width = screen.width() # width = Gdk.Screen.width()
-        # print("width: %d" % width)
-
-        display = screen.get_display()
-        print("display", display)
-
-        print("default screen", display.get_default_screen())
-        # print(display.get_())
-
-        print(dir(screen.get_display()))
-        input()
-
-        # (c) collect data about each monitor
-        monitors = []
-        nmons = screen.get_display().get_n_monitors()
-        print("there are %d monitors" % nmons)
-        for m in range(nmons):
-            monitor = display.get_monitor(m)
-            print(monitor)
-            print(monitor.get_geometry())
-            mg = monitor.get_geometry()
-            print("monitor %d: %d x %d" % (m,mg.width,mg.height))
-            monitors.append(mg)
-
-        print(monitors)
-
-        curmon = 0
-
-        # current monitor
-        # curmon = screen.get_monitor_at_window(screen.get_active_window())
-        x = monitors[curmon].x
-        y = monitors[curmon].y
-        width = monitors[curmon].width
-        height = monitors[curmon].height
-        print("monitor %d: %d x %d (current, offset %d)" % (curmon,width,height,x))
-        print("bar: start=%d end=%d" % (x,x+width-1))
-
-        # display bar along the top of the current monitor
-        # y = 100
-
-        # print("width: %d" % width)
-
-        print("move", x, y)
-        # window.move(x,y)
-        self.window.move(x,y+height/2-1)
-
-        # 
-        self.window.resize(10, self.bar_size)
-        # window.resize(width, self.bar_size)
+        self.set_monitor()
 
         # it must be shown before changing properties 
         self.window.show_all()
+
+
+        print("xid", self.xid)
+
+        self.set_location()
+
+
+        print("getwindow2", self.window.get_window())
+
+
+
+        # main event loop
+        # Gtk.main()
+        # Control-C termination broken in GTK3 http://stackoverflow.com/a/33834721
+        # https://bugzilla.gnome.org/show_bug.cgi?id=622084
+        from gi.repository import GLib
+        GLib.MainLoop().run()
+
+
+    def set_monitor(self):
+
+
+        self.monitor = self.display.get_monitor(self.monitor_n)
+        print("monitor", self.monitor)
+        self.monitor_geom = self.monitor.get_geometry()
+        print("monitor_geom", self.monitor_geom)
+
+        x = self.monitor_geom.x
+        y = self.monitor_geom.y
+        w = self.monitor_geom.width
+        h = self.monitor_geom.height
+
+        print(f"monitor {self.monitor_n}: ({x},{y}) ({w}x{h})")
+        print("bar: start=%d end=%d" % (x,x+w-1))
+
+        # Resize monitor to be as wide and monitor and `bar_size` high
+        self.window.resize(w, self.bar_size)
+
+        # Move to top-left coordinate of desired monitor
+        # Note this does NOT set the location (top/bottom) - see Bar.set_location for details
+        self.window.move(x,y)
+
+
+        # # (c) collect data about each monitor
+        # monitors = []
+        # nmons = self.display.get_n_monitors()
+        # print("there are %d monitors" % nmons)
+        # for m in range(nmons):
+        #     monitor = self.display.get_monitor(m)
+        #     mg = monitor.get_geometry()
+        #     print(monitor, mg, mg.x, mg.y)
+        #     print("monitor %d: %d x %d" % (m,mg.width,mg.height))
+        #     monitors.append(mg)
+
+        # print(monitors)
+
+    def set_location(self):
+        """
+            Moves the bar to the top or bottom of screen.
+
+
+            When setting the coordinate with Window.move, GDK seems to try to place the dock at 
+            a certain location (top or bottom) depending on this move coordinate (presumably based
+            on whether the bar is closer to the top or bottom). However, when using multiple 
+            monitors in particular arrangements this stops working reliably.
+
+            In my case, I have 4 1080p monitors in the following upside-down "T" top-left coord arrangement:
+                0. (3840,1080)
+                1. (1920,1080)
+                2. (0,1080)
+                3. (1920,0)
+            
+            Setting the coordinate to (0,1080) places the bar at the bottom of the left screen rather than
+            the top, even though it is closer to the top.
+            
+            To fix this, we manually set the X11 property "STRUT" and "STRUT_PARTIAL" on the window, which
+            are essentially used to tell the WM to add gaps between the sides of monitors for applications
+            like docks or status bars.
+
+            STRUT: https://specifications.freedesktop.org/wm-spec/1.3/ar01s05.html
+        """
 
         # (d) reserve space (a "strut") for the bar so it does not become obscured
         #     when other windows are maximized, etc
         # http://stackoverflow.com/questions/33719686  property_change not in gtk3.0
         # https://sourceforge.net/p/python-xlib/mailman/message/27574603
-        # display = Display()
-        # xid = window.get_toplevel().get_window().get_xid()
-        # print("xid", hex(xid))
-        # topw = display.create_resource_object('window', xid)
+        display = Display()
+        xid = self.window.get_toplevel().get_window().get_xid()
+        print("xid", hex(xid))
+        topw = display.create_resource_object('window', xid)
 
-        # # http://python-xlib.sourceforge.net/doc/html/python-xlib_21.html#SEC20
-        # topw.change_property(display.intern_atom('_NET_WM_STRUT'),
-        #                        display.intern_atom('CARDINAL'), 32,
-        #                        [0, 0, self.bar_size, 0 ],
-        #                        X.PropModeReplace)
-        # topw.change_property(display.intern_atom('_NET_WM_STRUT_PARTIAL'),
-        #                        display.intern_atom('CARDINAL'), 32,
-        #                        [0, 0, self.bar_size, 0, 0, 0, 0, 0, x, x+width-1, 0, 0],
-        #                        X.PropModeReplace)
+
+        strut = [0 for i in range(12)]
+
+        x = self.monitor_geom.x
+        y = self.monitor_geom.y
+        width = self.monitor_geom.width
+
+        if self.location == Bar.Location.TOP:
+            strut[2] = 0 + self.bar_size
+            strut[8] = x
+            strut[9] = x + width - 1
+        elif self.location == Bar.Location.BOTTOM:
+            strut[3] = 0 + self.bar_size
+            strut[10] = x
+            strut[11] = x + width - 1
+
+        print(strut)
+
+        _STRUT_PARTIAL = display.intern_atom('_NET_WM_STRUT_PARTIAL')
+        _CARDINAL = display.intern_atom('CARDINAL')
+        topw.change_property(_STRUT_PARTIAL, _CARDINAL, 32, strut, X.PropModeReplace)
+
+        # For some reason this doesn't work reusing the _CARDINAL define above, so we redefine it here
+        _STRUT = display.intern_atom('_NET_WM_STRUT')
+        _CARDINAL = display.intern_atom('CARDINAL')
+        topw.change_property(_STRUT, _CARDINAL, 32, strut[:4], X.PropModeReplace)
+
 
         # we set _NET_WM_STRUT, the older mechanism as well as _NET_WM_STRUT_PARTIAL
         # but window managers ignore the former if they support the latter.
@@ -187,21 +258,9 @@ class Bar:
         #
 
 
-        # main event loop
-        # Gtk.main()
-        # Control-C termination broken in GTK3 http://stackoverflow.com/a/33834721
-        # https://bugzilla.gnome.org/show_bug.cgi?id=622084
-        from gi.repository import GLib
-        GLib.MainLoop().run()
-
-
-    def set_monitor(self):
-        pass
-
 
 
 if __name__ == "__main__":
     bar = Bar()
     bar.create_window()
-
 
