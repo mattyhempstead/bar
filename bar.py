@@ -5,9 +5,8 @@ import gi
 gi.require_version('Gtk','3.0')
 from gi.repository import Gtk, Gdk, GdkX11
 
-import Xlib
-from Xlib.display import Display
-from Xlib import X
+import Xlib.X
+import Xlib.display
 
 from enum import Enum, auto
 
@@ -39,16 +38,19 @@ class Bar:
         """
 
         # Display > Screen > Monitor > Window
-        self.window = None
-        self.screen = None
-        self.display = None
-        self.monitor = None
+        self.window:Gtk.Window = None
+
+        self.screen:GdkX11.X11Screen = None
+        self.display:GdkX11.X11Display = None
+        self.monitor:GdkX11.X11Monitor = None
 
 
     @property
     def xid(self):
         """ Can only be accessed after .show_all() """
-        return hex(self.window.get_toplevel().get_window().get_xid())
+        # Reference used instead: self.window.get_toplevel().get_window().get_xid()
+        # self.window.get_window() is type GdkX11.X11Window (only exists after show_all I think)
+        return self.window.get_window().get_xid()
 
 
     def create_window(self):
@@ -58,11 +60,8 @@ class Bar:
                                 Gtk.get_micro_version()))
 
 
-        # (a) Create an undecorated dock
+        # Create an undecorated dock
         self.window = Gtk.Window()
-
-        # self.window.set_gravity(Gdk.Gravity.NORTH_WEST)
-        # self.window.set_gravity(Gdk.Gravity.SOUTH_WEST)
 
         # X11 title
         self.window.set_title(self.bar_title)
@@ -89,8 +88,6 @@ class Bar:
 
 
         print("window", self.window)
-        print("getwindow1", self.window.get_window())
-        # print(window.get_window().get_xid())
 
         # The screen that the window is inside of
         # Usually only one screen nowadays which contains all the monitors
@@ -118,13 +115,13 @@ class Bar:
         # it must be shown before changing properties 
         self.window.show_all()
 
-
         print("xid", self.xid)
+        print("getwindow2", self.window.get_window())
+
 
         self.set_location()
 
 
-        print("getwindow2", self.window.get_window())
 
 
 
@@ -137,7 +134,9 @@ class Bar:
 
 
     def set_monitor(self):
-
+        """
+            Sets the monitor by moving the Gtk Window to the top left coordinate of the monitor.
+        """
 
         self.monitor = self.display.get_monitor(self.monitor_n)
         print("monitor", self.monitor)
@@ -150,7 +149,7 @@ class Bar:
         h = self.monitor_geom.height
 
         print(f"monitor {self.monitor_n}: ({x},{y}) ({w}x{h})")
-        print("bar: start=%d end=%d" % (x,x+w-1))
+        print(f"bar: start={x}, end={x+w-1}")
 
         # Resize monitor to be as wide and monitor and `bar_size` high
         self.window.resize(w, self.bar_size)
@@ -159,19 +158,9 @@ class Bar:
         # Note this does NOT set the location (top/bottom) - see Bar.set_location for details
         self.window.move(x,y)
 
+        # We might want to show the available monitors at one point
+        # monitor_n = self.display.get_n_monitors()
 
-        # # (c) collect data about each monitor
-        # monitors = []
-        # nmons = self.display.get_n_monitors()
-        # print("there are %d monitors" % nmons)
-        # for m in range(nmons):
-        #     monitor = self.display.get_monitor(m)
-        #     mg = monitor.get_geometry()
-        #     print(monitor, mg, mg.x, mg.y)
-        #     print("monitor %d: %d x %d" % (m,mg.width,mg.height))
-        #     monitors.append(mg)
-
-        # print(monitors)
 
     def set_location(self):
         """
@@ -199,43 +188,44 @@ class Bar:
             STRUT: https://specifications.freedesktop.org/wm-spec/1.3/ar01s05.html
         """
 
+        # Get X Display object so we can set low-level X properties (not Gdk)
+        x_display:Xlib.display.Display = Xlib.display.Display()
+
+        # X Window resource (not Gtk or Gdk)
+        x_window = x_display.create_resource_object('window', self.xid)
+
+        # Construct strut per the docs
+        # https://specifications.freedesktop.org/wm-spec/1.3/ar01s05.html
+        strut = [0 for i in range(12)]
+        if self.location == Bar.Location.TOP:
+            strut[2] = 0 + self.bar_size
+            strut[8] = self.monitor_geom.x
+            strut[9] = self.monitor_geom.x + self.monitor_geom.width - 1
+        elif self.location == Bar.Location.BOTTOM:
+            strut[3] = 0 + self.bar_size
+            strut[10] = self.monitor_geom.x
+            strut[11] = self.monitor_geom.x + self.monitor_geom.width - 1
+
+
+        # Set STRUT_PARTIAL and STRUT properties on Xlib window
+
+        _STRUT_PARTIAL = x_display.intern_atom('_NET_WM_STRUT_PARTIAL')
+        _CARDINAL = x_display.intern_atom('CARDINAL')
+        x_window.change_property(_STRUT_PARTIAL, _CARDINAL, 32, strut, Xlib.X.PropModeReplace)
+
+        # WM should ignore STRUT if STRUT_PARTIAL is set, but i3 seems to need both.
+        # For some reason this doesn't work reusing the _CARDINAL define above, so we redefine it here
+        _STRUT = x_display.intern_atom('_NET_WM_STRUT')
+        _CARDINAL = x_display.intern_atom('CARDINAL')
+        x_window.change_property(_STRUT, _CARDINAL, 32, strut[:4], Xlib.X.PropModeReplace)
+
+
         # (d) reserve space (a "strut") for the bar so it does not become obscured
         #     when other windows are maximized, etc
         # http://stackoverflow.com/questions/33719686  property_change not in gtk3.0
         # https://sourceforge.net/p/python-xlib/mailman/message/27574603
-        display = Display()
-        xid = self.window.get_toplevel().get_window().get_xid()
-        print("xid", hex(xid))
-        topw = display.create_resource_object('window', xid)
-
-
-        strut = [0 for i in range(12)]
-
-        x = self.monitor_geom.x
-        y = self.monitor_geom.y
-        width = self.monitor_geom.width
-
-        if self.location == Bar.Location.TOP:
-            strut[2] = 0 + self.bar_size
-            strut[8] = x
-            strut[9] = x + width - 1
-        elif self.location == Bar.Location.BOTTOM:
-            strut[3] = 0 + self.bar_size
-            strut[10] = x
-            strut[11] = x + width - 1
-
-        print(strut)
-
-        _STRUT_PARTIAL = display.intern_atom('_NET_WM_STRUT_PARTIAL')
-        _CARDINAL = display.intern_atom('CARDINAL')
-        topw.change_property(_STRUT_PARTIAL, _CARDINAL, 32, strut, X.PropModeReplace)
-
-        # For some reason this doesn't work reusing the _CARDINAL define above, so we redefine it here
-        _STRUT = display.intern_atom('_NET_WM_STRUT')
-        _CARDINAL = display.intern_atom('CARDINAL')
-        topw.change_property(_STRUT, _CARDINAL, 32, strut[:4], X.PropModeReplace)
-
-
+        #
+        #
         # we set _NET_WM_STRUT, the older mechanism as well as _NET_WM_STRUT_PARTIAL
         # but window managers ignore the former if they support the latter.
         #
@@ -255,7 +245,6 @@ class Bar:
         # is that space is reserved only on the current monitor.
         #
         # co-ordinates are specified relative to the screen (i.e. all monitors together).
-        #
 
 
 
